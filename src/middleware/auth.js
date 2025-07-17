@@ -488,15 +488,18 @@ const getRateLimiter = () => {
         return null;
       }
       
+      const config = require('../../config/config');
+      const maxConcurrency = config.queueRateLimit.maxConcurrency || 3;
+      
       rateLimiter = new RateLimiterRedis({
         storeClient: client,
         keyPrefix: 'global_rate_limit',
-        points: 1000, // 请求数量
-        duration: 900, // 15分钟 (900秒)
-        blockDuration: 900, // 阻塞时间15分钟
+        points: maxConcurrency, // 使用配置的并发限制
+        duration: 60, // 1分钟滑动窗口
+        blockDuration: 60, // 阻塞时间1分钟
       });
       
-      logger.info('✅ Rate limiter initialized successfully');
+      logger.info(`✅ Rate limiter initialized with maxConcurrency: ${maxConcurrency}`);
     } catch (error) {
       logger.warn('⚠️ Rate limiter initialization failed, using fallback', { error: error.message });
       return null;
@@ -520,7 +523,7 @@ const globalRateLimit = async (req, res, next) => {
   const clientIP = req.ip || req.connection?.remoteAddress || 'unknown';
   
   try {
-    await limiter.consume(clientIP);
+    await limiter.consume(1);
     next();
   } catch (rejRes) {
     const remainingPoints = rejRes.remainingPoints || 0;
@@ -528,16 +531,19 @@ const globalRateLimit = async (req, res, next) => {
     
     logger.security(`🚦 Global rate limit exceeded for IP: ${clientIP}`);
     
+    const config = require('../../config/config');
+    const maxConcurrency = config.queueRateLimit.maxConcurrency || 3;
+    
     res.set({
-      'Retry-After': Math.round(msBeforeNext / 1000) || 900,
-      'X-RateLimit-Limit': 1000,
+      'Retry-After': Math.round(msBeforeNext / 1000) || 60,
+      'X-RateLimit-Limit': maxConcurrency,
       'X-RateLimit-Remaining': remainingPoints,
       'X-RateLimit-Reset': new Date(Date.now() + msBeforeNext).toISOString()
     });
     
     res.status(429).json({
       error: 'Too Many Requests',
-      message: 'Too many requests from this IP, please try again later.',
+      message: 'Global rate limit exceeded, please try again later.',
       retryAfter: Math.round(msBeforeNext / 1000)
     });
   }
